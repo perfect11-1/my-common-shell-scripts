@@ -1,0 +1,35 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","metadata":{"annotations":{},"name":"node-exporter"},"rules":[{"apiGroups":[""],"resources":["nodes","nodes/proxy","services","endpoints","pods"],"verbs":["get","list","watch"]},{"apiGroups":["extensions"],"resources":["ingresses"],"verbs":["get","list","watch"]},{"nonResourceURLs":["/metrics"],"verbs":["get"]}]}
+  creationTimestamp: "2025-09-23T06:30:17Z"
+  name: node-exporter
+  resourceVersion: "31485"
+  uid: 86f23519-ee68-4515-b649-6008d0dd0d95
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  - nodes/proxy
+  - services
+  - endpoints
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - extensions
+  resources:
+  - ingresses
+  verbs:
+  - get
+  - list
+  - watch
+- nonResourceURLs:
+  - /metrics
+  verbs:
+  - get

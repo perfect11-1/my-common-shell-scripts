@@ -1,0 +1,210 @@
+apiVersion: v1
+data:
+  first_rules.yml: |
+    groups:
+    - name: example
+      rules:
+      - alert: HighRequestLatency
+        expr: job:request_latency_seconds:mean5m{job="myjob"} > 0.5
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: High request latency
+      - alert: HighMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High memory usage detected
+      - alert: PodCrashLooping
+        expr: rate(kube_pod_container_status_restarts_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Pod is crash looping
+
+    # Node Exporter告警规则
+    - name: node-exporter-alerts
+      rules:
+        # 节点下线告警
+        - alert: NodeDown
+          expr: up{job="node-exporter"} == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "节点 {{ $labels.instance }} 下线"
+            description: "节点 {{ $labels.instance }} 已经下线超过1分钟"
+
+        # CPU使用率过高
+        - alert: HighCPUUsage
+          expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "节点 {{ $labels.instance }} CPU使用率过高"
+            description: "节点 {{ $labels.instance }} CPU使用率已超过80%，当前值：{{ $value }}%"
+
+        # 内存使用率过高
+        - alert: HighMemoryUsage
+          expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "节点 {{ $labels.instance }} 内存使用率过高"
+            description: "节点 {{ $labels.instance }} 内存使用率已超过85%，当前值：{{ $value }}%"
+
+        # 磁盘空间不足
+        - alert: DiskSpaceLow
+          expr: (1 - (node_filesystem_avail_bytes{fstype!="tmpfs"} / node_filesystem_size_bytes{fstype!="tmpfs"})) * 100 > 90
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "节点 {{ $labels.instance }} 磁盘空间不足"
+            description: "节点 {{ $labels.instance }} 磁盘 {{ $labels.mountpoint }} 使用率已超过90%，当前值：{{ $value }}%"
+  prometheus.yml: |-
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    rule_files:
+      - "first_rules.yml"
+      - "/etc/prometheus/rules/*.yml"
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets:
+              - alertmanager-service:9093
+
+    scrape_configs:
+      # Prometheus自身监控
+      - job_name: 'prometheus'
+        static_configs:
+          - targets: ['localhost:9090']
+
+      # Node Exporter监控 - 系统指标
+      - job_name: 'node-exporter'
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - monitoring
+        relabel_configs:
+          # 只保留node-exporter的Pod
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: node-exporter
+          # 使用Pod的IP和端口
+          - source_labels: [__address__]
+            action: replace
+            regex: ([^:]+)(?::\d+)?
+            replacement: ${1}:9100
+            target_label: __address__
+          # 添加节点名称标签
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            action: replace
+            target_label: instance
+          # 添加节点标签
+          - action: labelmap
+            regex: __meta_kubernetes_pod_node_label_(.+)
+        scrape_interval: 15s
+        metrics_path: /metrics
+
+      # kube-state-metrics监控 - Kubernetes集群状态指标
+      - job_name: 'kube-state-metrics'
+        static_configs:
+          - targets: ['kube-state-metrics:8080']
+        scrape_interval: 15s
+        metrics_path: /metrics
+
+      # Kubernetes API Server监控
+      - job_name: 'kubernetes-apiservers'
+        kubernetes_sd_configs:
+          - role: endpoints
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: default;kubernetes;https
+
+      # Kubernetes节点监控
+      - job_name: 'kubernetes-nodes'
+        kubernetes_sd_configs:
+          - role: node
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics
+
+      # Kubernetes Pods监控
+      - job_name: 'kubernetes-pods'
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+          - source_labels: [__meta_kubernetes_namespace]
+            action: replace
+            target_label: kubernetes_namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: kubernetes_pod_name
+
+      # Kubernetes cAdvisor监控
+      - job_name: 'kubernetes-cadvisor'
+        kubernetes_sd_configs:
+          - role: node
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+kind: ConfigMap
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","data":{"first_rules.yml":"groups:\n- name: example\n  rules:\n  - alert: HighRequestLatency\n    expr: job:request_latency_seconds:mean5m{job=\"myjob\"} \u003e 0.5\n    for: 10m\n    labels:\n      severity: page\n    annotations:\n      summary: High request latency\n  - alert: HighMemoryUsage\n    expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes \u003e 0.8\n    for: 5m\n    labels:\n      severity: warning\n    annotations:\n      summary: High memory usage detected\n  - alert: PodCrashLooping\n    expr: rate(kube_pod_container_status_restarts_total[15m]) \u003e 0\n    for: 5m\n    labels:\n      severity: critical\n    annotations:\n      summary: Pod is crash looping\n\n# Node Exporter告警规则\n- name: node-exporter-alerts\n  rules:\n    # 节点下线告警\n    - alert: NodeDown\n      expr: up{job=\"node-exporter\"} == 0\n      for: 1m\n      labels:\n        severity: critical\n      annotations:\n        summary: \"节点 {{ $labels.instance }} 下线\"\n        description: \"节点 {{ $labels.instance }} 已经下线超过1分钟\"\n\n    # CPU使用率过高\n    - alert: HighCPUUsage\n      expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100) \u003e 80\n      for: 5m\n      labels:\n        severity: warning\n      annotations:\n        summary: \"节点 {{ $labels.instance }} CPU使用率过高\"\n        description: \"节点 {{ $labels.instance }} CPU使用率已超过80%，当前值：{{ $value }}%\"\n\n    # 内存使用率过高\n    - alert: HighMemoryUsage\n      expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 \u003e 85\n      for: 5m\n      labels:\n        severity: warning\n      annotations:\n        summary: \"节点 {{ $labels.instance }} 内存使用率过高\"\n        description: \"节点 {{ $labels.instance }} 内存使用率已超过85%，当前值：{{ $value }}%\"\n\n    # 磁盘空间不足\n    - alert: DiskSpaceLow\n      expr: (1 - (node_filesystem_avail_bytes{fstype!=\"tmpfs\"} / node_filesystem_size_bytes{fstype!=\"tmpfs\"})) * 100 \u003e 90\n      for: 10m\n      labels:\n        severity: critical\n      annotations:\n        summary: \"节点 {{ $labels.instance }} 磁盘空间不足\"\n        description: \"节点 {{ $labels.instance }} 磁盘 {{ $labels.mountpoint }} 使用率已超过90%，当前值：{{ $value }}%\"\n","prometheus.yml":"global:\n  scrape_interval: 15s\n  evaluation_interval: 15s\n\nrule_files:\n  - \"first_rules.yml\"\n  - \"/etc/prometheus/rules/*.yml\"\n\nalerting:\n  alertmanagers:\n    - static_configs:\n        - targets:\n          - alertmanager-service:9093\n\nscrape_configs:\n  # Prometheus自身监控\n  - job_name: 'prometheus'\n    static_configs:\n      - targets: ['localhost:9090']\n\n  # Node Exporter监控 - 系统指标\n  - job_name: 'node-exporter'\n    kubernetes_sd_configs:\n      - role: endpoints\n        namespaces:\n          names:\n            - monitoring\n    relabel_configs:\n      - source_labels: [__meta_kubernetes_service_name]\n        action: keep\n        regex: node-exporter-service\n      - source_labels: [__meta_kubernetes_endpoint_port_name]\n        action: keep\n        regex: http-metrics\n      - source_labels: [__meta_kubernetes_node_name]\n        target_label: instance\n      - target_label: __address__\n        replacement: kubernetes.default.svc:443\n      - source_labels: [__meta_kubernetes_node_name]\n        regex: (.+)\n        target_label: __metrics_path__\n        replacement: /api/v1/nodes/${1}/proxy/metrics\n\n  # Kubernetes API Server监控\n  - job_name: 'kubernetes-apiservers'\n    kubernetes_sd_configs:\n      - role: endpoints\n    scheme: https\n    tls_config:\n      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt\n    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token\n    relabel_configs:\n      - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]\n        action: keep\n        regex: default;kubernetes;https\n\n  # Kubernetes节点监控\n  - job_name: 'kubernetes-nodes'\n    kubernetes_sd_configs:\n      - role: node\n    scheme: https\n    tls_config:\n      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt\n    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token\n    relabel_configs:\n      - action: labelmap\n        regex: __meta_kubernetes_node_label_(.+)\n      - target_label: __address__\n        replacement: kubernetes.default.svc:443\n      - source_labels: [__meta_kubernetes_node_name]\n        regex: (.+)\n        target_label: __metrics_path__\n        replacement: /api/v1/nodes/${1}/proxy/metrics\n\n  # Kubernetes Pods监控\n  - job_name: 'kubernetes-pods'\n    kubernetes_sd_configs:\n      - role: pod\n    relabel_configs:\n      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]\n        action: keep\n        regex: true\n      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]\n        action: replace\n        target_label: __metrics_path__\n        regex: (.+)\n      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]\n        action: replace\n        regex: ([^:]+)(?::\\d+)?;(\\d+)\n        replacement: $1:$2\n        target_label: __address__\n      - action: labelmap\n        regex: __meta_kubernetes_pod_label_(.+)\n      - source_labels: [__meta_kubernetes_namespace]\n        action: replace\n        target_label: kubernetes_namespace\n      - source_labels: [__meta_kubernetes_pod_name]\n        action: replace\n        target_label: kubernetes_pod_name\n\n  # Kubernetes cAdvisor监控\n  - job_name: 'kubernetes-cadvisor'\n    kubernetes_sd_configs:\n      - role: node\n    scheme: https\n    tls_config:\n      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt\n    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token\n    relabel_configs:\n      - action: labelmap\n        regex: __meta_kubernetes_node_label_(.+)\n      - target_label: __address__\n        replacement: kubernetes.default.svc:443\n      - source_labels: [__meta_kubernetes_node_name]\n        regex: (.+)\n        target_label: __metrics_path__\n        replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor\n"},"kind":"ConfigMap","metadata":{"annotations":{},"name":"prometheus-config","namespace":"monitoring"}}
+  creationTimestamp: "2025-09-23T02:50:58Z"
+  name: prometheus-config
+  namespace: monitoring
+  resourceVersion: "90496"
+  uid: 6d96bc5d-3f23-47da-b889-2d6edb445fac

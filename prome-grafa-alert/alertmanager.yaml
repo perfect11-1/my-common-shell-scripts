@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    deployment.kubernetes.io/revision: "1"
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"labels":{"app":"alertmanager"},"name":"alertmanager","namespace":"monitoring"},"spec":{"replicas":1,"selector":{"matchLabels":{"app":"alertmanager"}},"template":{"metadata":{"labels":{"app":"alertmanager"}},"spec":{"containers":[{"args":["--config.file=/etc/alertmanager/config.yml","--storage.path=/alertmanager","--web.external-url=http://localhost:9093"],"image":"prom/alertmanager:v0.25.0","name":"alertmanager","ports":[{"containerPort":9093}],"resources":{"limits":{"cpu":"100m","memory":"256Mi"},"requests":{"cpu":"50m","memory":"128Mi"}},"volumeMounts":[{"mountPath":"/etc/alertmanager","name":"alertmanager-config-volume"},{"mountPath":"/alertmanager","name":"alertmanager-storage-volume"}]}],"volumes":[{"configMap":{"name":"alertmanager-config"},"name":"alertmanager-config-volume"},{"emptyDir":{},"name":"alertmanager-storage-volume"}]}}}}
+  creationTimestamp: "2025-09-22T13:55:17Z"
+  generation: 1
+  labels:
+    app: alertmanager
+  name: alertmanager
+  namespace: monitoring
+  resourceVersion: "1845"
+  uid: 5bae0ec2-3829-4a1f-b3db-1b71de283cc1
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: alertmanager
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: alertmanager
+    spec:
+      containers:
+      - args:
+        - --config.file=/etc/alertmanager/config.yml
+        - --storage.path=/alertmanager
+        - --web.external-url=http://localhost:9093
+        image: prom/alertmanager:v0.25.0
+        imagePullPolicy: IfNotPresent
+        name: alertmanager
+        ports:
+        - containerPort: 9093
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 100m
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /etc/alertmanager
+          name: alertmanager-config-volume
+        - mountPath: /alertmanager
+          name: alertmanager-storage-volume
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: alertmanager-config
+        name: alertmanager-config-volume
+      - emptyDir: {}
+        name: alertmanager-storage-volume
+status:
+  availableReplicas: 1
+  conditions:
+  - lastTransitionTime: "2025-09-22T13:55:21Z"
+    lastUpdateTime: "2025-09-22T13:55:21Z"
+    message: Deployment has minimum availability.
+    reason: MinimumReplicasAvailable
+    status: "True"
+    type: Available
+  - lastTransitionTime: "2025-09-22T13:55:17Z"
+    lastUpdateTime: "2025-09-22T13:55:21Z"
+    message: ReplicaSet "alertmanager-79796db7cb" has successfully progressed.
+    reason: NewReplicaSetAvailable
+    status: "True"
+    type: Progressing
+  observedGeneration: 1
+  readyReplicas: 1
+  replicas: 1
+  updatedReplicas: 1

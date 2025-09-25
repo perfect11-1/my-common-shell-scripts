@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","kind":"Service","metadata":{"annotations":{"prometheus.io/port":"8080","prometheus.io/scrape":"true"},"labels":{"app":"kube-state-metrics"},"name":"kube-state-metrics","namespace":"monitoring"},"spec":{"ports":[{"name":"http-metrics","port":8080,"protocol":"TCP","targetPort":"http-metrics"},{"name":"telemetry","port":8081,"protocol":"TCP","targetPort":"telemetry"}],"selector":{"app":"kube-state-metrics"},"type":"ClusterIP"}}
+    prometheus.io/port: "8080"
+    prometheus.io/scrape: "true"
+  creationTimestamp: "2025-09-23T14:49:50Z"
+  labels:
+    app: kube-state-metrics
+  name: kube-state-metrics
+  namespace: monitoring
+  resourceVersion: "90417"
+  uid: 2ec6d702-633c-4cda-b349-7ac5bf634a90
+spec:
+  clusterIP: 10.96.246.84
+  clusterIPs:
+  - 10.96.246.84
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: http-metrics
+    port: 8080
+    protocol: TCP
+    targetPort: http-metrics
+  - name: telemetry
+    port: 8081
+    protocol: TCP
+    targetPort: telemetry
+  selector:
+    app: kube-state-metrics
+  sessionAffinity: None
+  type: ClusterIP
+status:
+  loadBalancer: {}

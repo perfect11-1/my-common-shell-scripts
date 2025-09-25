@@ -1,0 +1,38 @@
+apiVersion: v1
+data:
+  config.yml: |-
+    global:
+      smtp_smarthost: 'localhost:587'
+      smtp_from: 'alertmanager@example.org'
+      smtp_auth_username: 'alertmanager@example.org'
+      smtp_auth_password: 'password'
+
+    route:
+      group_by: ['alertname']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 1h
+      receiver: 'web.hook'
+
+    receivers:
+    - name: 'web.hook'
+      webhook_configs:
+      - url: 'http://127.0.0.1:5001/'
+        send_resolved: true
+
+    inhibit_rules:
+      - source_match:
+          severity: 'critical'
+        target_match:
+          severity: 'warning'
+        equal: ['alertname', 'dev', 'instance']
+kind: ConfigMap
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","data":{"config.yml":"global:\n  smtp_smarthost: 'localhost:587'\n  smtp_from: 'alertmanager@example.org'\n  smtp_auth_username: 'alertmanager@example.org'\n  smtp_auth_password: 'password'\n\nroute:\n  group_by: ['alertname']\n  group_wait: 10s\n  group_interval: 10s\n  repeat_interval: 1h\n  receiver: 'web.hook'\n\nreceivers:\n- name: 'web.hook'\n  webhook_configs:\n  - url: 'http://127.0.0.1:5001/'\n    send_resolved: true\n\ninhibit_rules:\n  - source_match:\n      severity: 'critical'\n    target_match:\n      severity: 'warning'\n    equal: ['alertname', 'dev', 'instance']"},"kind":"ConfigMap","metadata":{"annotations":{},"name":"alertmanager-config","namespace":"monitoring"}}
+  creationTimestamp: "2025-09-22T13:55:12Z"
+  name: alertmanager-config
+  namespace: monitoring
+  resourceVersion: "1791"
+  uid: cc94f38b-adbe-4fb2-88a4-f61fadd230c7

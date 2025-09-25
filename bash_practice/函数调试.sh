@@ -4,7 +4,8 @@
 debug_function() {
     local func_name="${FUNCNAME[1]}" # 获取当前函数的名称
     local line_no="${BASH_LINENO[0]}" # 获取当前行号
-    
+    local func_namea="${FUNCNAME[@]}" # 获取当前函数的名称
+    local line_noa="${BASH_LINENO[@]}" # 获取当前行号
     
 echo -e "\033[32m当前[DEBUG] 函数名为: $func_name, 调用该函数的行号为: $line_no, 函数入参为: $*\033[0m" >&2
 }
