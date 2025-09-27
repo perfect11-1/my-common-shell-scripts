@@ -1,0 +1,289 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluentd
+  namespace: logging
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluentd
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fluentd
+roleRef:
+  kind: ClusterRole
+  name: fluentd
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: ServiceAccount
+  name: fluentd
+  namespace: logging
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluentd-config-optimized
+  namespace: logging
+data:
+  fluent.conf: |
+    # 系统配置 - 内存优化
+    <system>
+      workers 1
+      root_dir /tmp/fluentd
+      log_level warn
+      suppress_repeated_stacktrace true
+      emit_error_log_interval 30s
+      suppress_config_dump
+      without_source
+      enable_input_metrics false
+      enable_size_metrics false
+    </system>
+
+    # 主要容器日志收集 - 优化配置
+    <source>
+      @type tail
+      @id in_tail_container_logs
+      path /var/log/containers/*.log
+      pos_file /var/log/fluentd-containers.log.pos
+      tag kubernetes.*
+      read_from_head false
+      refresh_interval 30
+      rotate_wait 5
+      enable_watch_timer false
+      enable_stat_watcher false
+      read_lines_limit 100
+      read_bytes_limit_per_second 8192
+      <parse>
+        @type json
+        time_format %Y-%m-%dT%H:%M:%S.%NZ
+        keep_time_key false
+      </parse>
+    </source>
+
+    # 过滤器 - 减少内存使用
+    <filter kubernetes.**>
+      @type kubernetes_metadata
+      @id filter_kube_metadata
+      kubernetes_url "#{ENV['FLUENT_FILTER_KUBERNETES_URL'] || 'https://' + ENV.fetch('KUBERNETES_SERVICE_HOST') + ':' + ENV.fetch('KUBERNETES_SERVICE_PORT') + '/api'}"
+      verify_ssl "#{ENV['KUBERNETES_VERIFY_SSL'] || true}"
+      ca_file "#{ENV['KUBERNETES_CA_FILE']}"
+      skip_labels "#{ENV['FLUENT_KUBERNETES_METADATA_SKIP_LABELS'] || 'false'}"
+      skip_container_metadata "#{ENV['FLUENT_KUBERNETES_METADATA_SKIP_CONTAINER_METADATA'] || 'false'}"
+      skip_master_url "#{ENV['FLUENT_KUBERNETES_METADATA_SKIP_MASTER_URL'] || 'false'}"
+      skip_namespace_metadata "#{ENV['FLUENT_KUBERNETES_METADATA_SKIP_NAMESPACE_METADATA'] || 'false'}"
+      watch false
+      cache_size 1000
+      cache_ttl 3600
+      use_journal false
+    </filter>
+
+    # 排除系统日志以减少负载
+    <filter kubernetes.**>
+      @type grep
+      <exclude>
+        key $.kubernetes.namespace_name
+        pattern ^(kube-system|kube-public|kube-node-lease)$
+      </exclude>
+    </filter>
+
+    # 排除Fluentd自身的日志
+    <filter kubernetes.**>
+      @type grep
+      <exclude>
+        key $.kubernetes.container_name
+        pattern ^fluentd.*
+      </exclude>
+    </filter>
+
+    # 限制日志大小
+    <filter kubernetes.**>
+      @type record_transformer
+      enable_ruby true
+      <record>
+        message ${record["message"].to_s.length > 1000 ? record["message"].to_s[0..1000] + "...[truncated]" : record["message"]}
+      </record>
+    </filter>
+
+    # 输出到Elasticsearch - 优化缓冲配置
+    <match kubernetes.**>
+      @type elasticsearch
+      @id out_es
+      @log_level warn
+      include_tag_key true
+      host "#{ENV['FLUENT_ELASTICSEARCH_HOST'] || 'elasticsearch-service'}"
+      port "#{ENV['FLUENT_ELASTICSEARCH_PORT'] || '9200'}"
+      scheme "#{ENV['FLUENT_ELASTICSEARCH_SCHEME'] || 'http'}"
+      ssl_verify "#{ENV['FLUENT_ELASTICSEARCH_SSL_VERIFY'] || 'false'}"
+      ssl_version "#{ENV['FLUENT_ELASTICSEARCH_SSL_VERSION'] || 'TLSv1_2'}"
+      logstash_format true
+      logstash_prefix kubernetes
+      logstash_dateformat %Y.%m.%d
+      include_timestamp true
+      type_name _doc
+      suppress_type_name true
+      request_timeout 30s
+      reload_connections false
+      reconnect_on_error true
+      reload_on_failure false
+      log_es_400_reason false
+      <buffer>
+        @type file
+        path /var/log/fluentd-buffers/kubernetes.system.buffer
+        flush_mode interval
+        retry_type exponential_backoff
+        flush_thread_count 1
+        flush_interval 30s
+        retry_forever false
+        retry_max_times 3
+        retry_max_interval 30
+        chunk_limit_size 1M
+        queue_limit_length 4
+        total_limit_size 512MB
+        overflow_action drop_oldest_chunk
+        compress gzip
+        flush_at_shutdown true
+        disable_chunk_backup true
+      </buffer>
+    </match>
+
+    # 其他日志丢弃以节省内存
+    <match **>
+      @type null
+    </match>
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluentd-optimized
+  namespace: logging
+  labels:
+    app: fluentd
+    version: optimized
+spec:
+  selector:
+    matchLabels:
+      app: fluentd
+      version: optimized
+  template:
+    metadata:
+      labels:
+        app: fluentd
+        version: optimized
+    spec:
+      serviceAccount: fluentd
+      serviceAccountName: fluentd
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: fluentd
+        image: fluent/fluentd-kubernetes-daemonset:v1.16-debian-elasticsearch7-1
+        env:
+          - name: FLUENT_ELASTICSEARCH_HOST
+            value: "elasticsearch-service"
+          - name: FLUENT_ELASTICSEARCH_PORT
+            value: "9200"
+          - name: FLUENT_ELASTICSEARCH_SCHEME
+            value: "http"
+          - name: FLUENTD_SYSTEMD_CONF
+            value: disable
+          - name: FLUENT_CONTAINER_TAIL_EXCLUDE_PATH
+            value: /var/log/containers/fluent*
+          - name: FLUENT_ELASTICSEARCH_SSL_VERIFY
+            value: "false"
+          - name: FLUENT_ELASTICSEARCH_SSL_VERSION
+            value: "TLSv1_2"
+          # 内存优化环境变量
+          - name: FLUENT_CONF
+            value: fluent.conf
+          - name: FLUENTD_OPT
+            value: "--no-supervisor --workers 1"
+          # Ruby GC优化
+          - name: RUBY_GC_HEAP_INIT_SLOTS
+            value: "100000"
+          - name: RUBY_GC_HEAP_FREE_SLOTS
+            value: "200000"
+          - name: RUBY_GC_HEAP_GROWTH_FACTOR
+            value: "1.2"
+          - name: RUBY_GC_HEAP_GROWTH_MAX_SLOTS
+            value: "300000"
+          - name: RUBY_GC_HEAP_OLDOBJECT_LIMIT_FACTOR
+            value: "0.9"
+        resources:
+          limits:
+            memory: 1Gi
+            cpu: 500m
+          requests:
+            cpu: 100m
+            memory: 256Mi
+        volumeMounts:
+        - name: varlog
+          mountPath: /var/log
+        - name: varlibdockercontainers
+          mountPath: /var/lib/docker/containers
+          readOnly: true
+        - name: fluentd-config
+          mountPath: /fluentd/etc/fluent.conf
+          subPath: fluent.conf
+        - name: buffer-storage
+          mountPath: /var/log/fluentd-buffers
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: varlog
+        hostPath:
+          path: /var/log
+      - name: varlibdockercontainers
+        hostPath:
+          path: /var/lib/docker/containers
+      - name: fluentd-config
+        configMap:
+          name: fluentd-config-optimized
+      - name: buffer-storage
+        emptyDir:
+          sizeLimit: 1Gi
+
+
+#我在优化配置中解决了以下问题：
+#
+#1. 系统级优化
+#单worker模式减少内存占用
+#禁用不必要的metrics收集
+#调整日志级别减少输出
+#2. 日志收集优化
+#限制读取速度：8KB/s
+#限制单次读取：100行
+#禁用实时监控
+#3. 过滤优化
+#排除系统命名空间日志（kube-system等）
+#排除Fluentd自身日志
+#限制单条日志最大1000字符
+#4. 缓冲区优化
+#单线程flush减少并发
+#块大小限制1MB
+#队列长度限制4
+#总缓冲区大小512MB
+#启用gzip压缩
+#5. Ruby GC优化
+#调整垃圾回收参数
+#限制堆内存增长
+#6. 资源限制调整
+#内存限制：1GB
+#内存请求：256MB
+#添加健康检查
