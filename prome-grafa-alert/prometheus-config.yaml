@@ -91,22 +91,26 @@ data:
 
       # Node Exporter监控 - 系统指标
       - job_name: 'node-exporter'
+      #选择 Kubernetes 服务发现方式，role: pod 表示直接发现 Pod；namespaces 限定只在 monitoring 命名空间内筛选 Pod。
         kubernetes_sd_configs:
           - role: pod
             namespaces:
               names:
                 - monitoring
         relabel_configs:
+          #keep 规则检查 Pod 标签 app 是否是 node-exporter，只有匹配的 Pod 才会保留，其他 Pod 被过滤掉。
           # 只保留node-exporter的Pod
           - source_labels: [__meta_kubernetes_pod_label_app]
             action: keep
             regex: node-exporter
+          #replace 规则把原始地址（包括随机端口）改写成 PodIP:9100，固定到 Node Exporter 暴露的 9100 端口。
           # 使用Pod的IP和端口
           - source_labels: [__address__]
             action: replace
             regex: ([^:]+)(?::\d+)?
             replacement: ${1}:9100
             target_label: __address__
+          #replace 规则把 Pod 的节点名写入 instance 标签，使得图表和告警能按节点区分。
           # 添加节点名称标签
           - source_labels: [__meta_kubernetes_pod_node_name]
             action: replace
@@ -126,12 +130,17 @@ data:
 
       # Kubernetes API Server监控
       - job_name: 'kubernetes-apiservers'
+      #使用 Kubernetes 服务发现（Service Discovery），role: endpoints 表示发现 Kubernetes Endpoint 对象（即具体 pod/ip:port 列表），而不是 services、nodes 等
         kubernetes_sd_configs:
           - role: endpoints
+        #使用 HTTPS 协议去抓取目标（而不是默认的 http）
         scheme: https
+        #指定用于验证目标 TLS 证书的 CA 证书文件（通常是 Pod 内挂载的 ServiceAccount CA，用于信任 Kubernetes API server 或服务的证书）
         tls_config:
           ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        #指定用于身份认证的 Bearer Token 文件（通常是 ServiceAccount 的 token），Prometheus 会把该 token 放到 Authorization: Bearer  请求头里，用于访问需要认证的端点
         bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        #只会抓取位于 namespace 为 default、service 名称为 kubernetes、endpoint port name 为 https 的目标 —— 典型场景是抓取 Kubernetes 集群的内置 apiserver（kubernetes service 在 default 命名空间、port 名为 https）
         relabel_configs:
           - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
             action: keep
@@ -142,14 +151,19 @@ data:
         kubernetes_sd_configs:
           - role: node
         scheme: https
+        #指定用于验证目标 TLS 证书的 CA 证书文件（通常是 Pod 内挂载的 ServiceAccount CA，用于信任 Kubernetes API server 或服务的证书）
         tls_config:
           ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        #指定用于验证目标 TLS 证书的 CA 证书文件（通常是 Pod 内挂载的 ServiceAccount CA，用于信任 Kubernetes API server 或服务的证书）
         bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
         relabel_configs:
+          #把被发现的 Node 对象上所有以 _meta_kubernetes_node_label 形式的元标签，转换成 Prometheus 的普通标签 : （即把 Kubernetes node labels 映射为目标标签）
           - action: labelmap
             regex: __meta_kubernetes_node_label_(.+)
+          #将实际抓取目标地址强制替换为 kubernetes.default.svc:443（即指向集群的 apiserver 服务地址），因此 Prometheus 不直接去每个 node 的 IP，而是通过 apiserver 代理访问节点指标
           - target_label: __address__
             replacement: kubernetes.default.svc:443
+          #使用节点名填充抓取路径，构造 apiserver 的 proxy 路径 /api/v1/nodes//proxy/metrics，使得对 kubernetes.default.svc:443 的请求通过 apiserver 代理到对应 node 的 metrics endpoint
           - source_labels: [__meta_kubernetes_node_name]
             regex: (.+)
             target_label: __metrics_path__
